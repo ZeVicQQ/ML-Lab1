@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler, Normalizer
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import SelectKBest, f_classif, VarianceThreshold
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 
 # ------------------------------------------------------------
@@ -91,7 +91,12 @@ save_result(encoded, "3_one_hot_encoded")
 # ------------------------------------------------------------
 # 5. Отбор признаков с помощью одномерной статистики
 # ------------------------------------------------------------
-X = encoded
+# Удаляем константные признаки (дисперсия = 0), чтобы избежать предупреждений
+selector_var = VarianceThreshold(threshold=0.0)
+X_var = selector_var.fit_transform(encoded)
+retained_cols = encoded.columns[selector_var.get_support()]
+X = pd.DataFrame(X_var, columns=retained_cols)
+
 y = target.astype(int)
 
 selector = SelectKBest(score_func=f_classif, k='all')
@@ -102,6 +107,9 @@ feat_scores = pd.DataFrame({
     'f_score': selector.scores_,
     'p_value': selector.pvalues_
 })
+
+# На всякий случай убираем строки с NaN (если остались)
+feat_scores = feat_scores.dropna(subset=['f_score', 'p_value'])
 
 selected_features = feat_scores[feat_scores['p_value'] < 0.05].sort_values('p_value')
 save_result(feat_scores, "4_all_feature_scores")
@@ -159,6 +167,7 @@ report_lines = [
     "Пропуски в числовых признаках заполнены медианой, в категориальных — модой.",
     "Масштабирование применено ко всем числовым признакам (включая Study_Hours_Per_Day).",
     "Категориальные признаки (Gender, Year_of_Study, Department, Residence_Type) закодированы one-hot.",
+    "Перед отбором признаков удалены константные столбцы (дисперсия = 0).",
     "Отбор признаков выполнен с помощью f_classif и SelectKBest, выбраны признаки с p < 0.05.",
     "Тексты обработаны: удалены HTML-теги, приведены к нижнему регистру, удалена пунктуация.",
     "Построены модели мешка слов (CountVectorizer) и tf-idf (TfidfTransformer) для каждого файла.",
