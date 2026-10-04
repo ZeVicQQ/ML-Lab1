@@ -38,7 +38,9 @@ if not dataset_path.exists():
     raise FileNotFoundError(f"Датасет не найден: {dataset_path}")
 
 df = pd.read_csv(dataset_path)
-df = df.drop(columns=['Student_ID', 'Study_Hours_Per_Day'], errors='ignore')
+
+# Исключаем только Student_ID. Study_Hours_Per_Day оставляем!
+df = df.drop(columns=['Student_ID'], errors='ignore')
 
 target_col = 'Backlogs'
 features = df.drop(columns=[target_col])
@@ -152,10 +154,10 @@ report_lines = [
     "5. Обработка текстов: мешок слов и tf-idf для каждого файла отдельно.",
     "",
     "Ход работы:",
-    "Датасет загружен. Исключены Student_ID и Study_Hours_Per_Day.",
-    f"Целевая переменная: {target_col}. Признаки: все остальные.",
+    "Датасет загружен. Исключён только Student_ID.",
+    f"Целевая переменная: {target_col}. Признаки: все остальные, включая Study_Hours_Per_Day.",
     "Пропуски в числовых признаках заполнены медианой, в категориальных — модой.",
-    "Масштабирование применено к числовым признакам.",
+    "Масштабирование применено ко всем числовым признакам (включая Study_Hours_Per_Day).",
     "Категориальные признаки (Gender, Year_of_Study, Department, Residence_Type) закодированы one-hot.",
     "Отбор признаков выполнен с помощью f_classif и SelectKBest, выбраны признаки с p < 0.05.",
     "Тексты обработаны: удалены HTML-теги, приведены к нижнему регистру, удалена пунктуация.",
