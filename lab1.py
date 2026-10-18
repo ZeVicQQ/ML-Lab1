@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler, Normalizer
 from sklearn.feature_selection import SelectKBest, f_classif, VarianceThreshold
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
@@ -31,18 +32,39 @@ def save_result(df, name):
 
 
 # ------------------------------------------------------------
-# 2. Загрузка датасета и предварительная обработка
+# 2. Автоматический поиск и загрузка датасета
 # ------------------------------------------------------------
-dataset_path = BASE_DIR / "student_burnout_dropout_dataset_2-selected-columns.csv"
-if not dataset_path.exists():
-    raise FileNotFoundError(f"Датасет не найден: {dataset_path}")
+datasets_dir = BASE_DIR / "datasets"
+
+# Создаем папку datasets, если её нет
+if not datasets_dir.exists():
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+
+# Ищем все CSV файлы в папке datasets
+csv_files = list(datasets_dir.glob("*.csv"))
+
+if not csv_files:
+    raise FileNotFoundError(
+        f"В папке '{datasets_dir}' не найдено ни одного .csv файла.\n"
+        f"Пожалуйста, поместите файл с датасетом в эту папку и запустите снова."
+    )
+
+# Берем первый найденный файл
+dataset_path = csv_files[0]
+print(f"Автоматически выбран датасет: {dataset_path.name}")
 
 df = pd.read_csv(dataset_path)
 
-# Исключаем только Student_ID. Study_Hours_Per_Day оставляем!
+# Исключаем Student_ID, если он есть (errors='ignore' защищает от ошибки, если колонки нет)
 df = df.drop(columns=['Student_ID'], errors='ignore')
 
+# ВНИМАНИЕ: Если вы загрузите совершенно другой датасет, 
+# вам нужно будет изменить 'Backlogs' на название вашей целевой колонки
 target_col = 'Backlogs'
+
+if target_col not in df.columns:
+    raise ValueError(f"В датасете нет целевой колонки '{target_col}'. Пожалуйста, проверьте данные.")
+
 features = df.drop(columns=[target_col])
 target = df[target_col]
 
@@ -56,10 +78,11 @@ for col in categorical_cols:
     mode_val = features[col].mode()
     features[col] = features[col].fillna(mode_val[0] if not mode_val.empty else 'Unknown')
 
-target = target.fillna(target.median())
+target = target.fillna(target.median() if not target.mode().empty else 0)
+
 
 # ------------------------------------------------------------
-# 3. Масштабирование числовых признаков
+# 3. Масштабирование числовых признаков и ВИЗУАЛИЗАЦИЯ
 # ------------------------------------------------------------
 numeric_features = features.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -70,28 +93,57 @@ scalers = {
     'normalizer': Normalizer(norm='l2')
 }
 
+# Сохраняем таблицы с результатами
 for name, scaler in scalers.items():
     scaled = scaler.fit_transform(features[numeric_features])
     scaled_df = pd.DataFrame(scaled, columns=[f"{col}_scaled" for col in numeric_features])
     save_result(scaled_df, f"2_{name}")
 
+# --- Построение графиков масштабирования ---
+print("Построение графиков масштабирования...")
+
+# Защита: берем первые два числовых признака для визуализации (чтобы не зависеть от жестких имен)
+if len(numeric_features) >= 2:
+    f1, f2 = numeric_features[0], numeric_features[1]
+else:
+    raise ValueError("Для построения графика нужно хотя бы 2 числовых признака.")
+
+fig, axes = plt.subplots(1, 5, figsize=(20, 4))
+fig.suptitle('Различные способы масштабирования и предварительной обработки данных', fontsize=14)
+
+# Исходные данные
+axes[0].scatter(features[f1], features[f2], c=target, cmap='bwr', alpha=0.7, edgecolors='k')
+axes[0].set_title('Original Data')
+axes[0].set_xlabel(f1)
+axes[0].set_ylabel(f2)
+
+# Масштабированные данные
+for i, (name, scaler) in enumerate(scalers.items(), start=1):
+    X_subset = features[[f1, f2]]
+    scaled_subset = scaler.fit_transform(X_subset)
+    axes[i].scatter(scaled_subset[:, 0], scaled_subset[:, 1], c=target, cmap='bwr', alpha=0.7, edgecolors='k')
+    axes[i].set_title(name.replace('_', ' ').title())
+    axes[i].set_xlabel('Feature 1')
+    axes[i].set_ylabel('Feature 2')
+
+plt.tight_layout()
+plt.savefig(RESULT_DIR / "scaling_visualization.png", dpi=150)
+plt.close()
+
+
 # ------------------------------------------------------------
 # 4. Прямое кодирование категориальных признаков
 # ------------------------------------------------------------
 features_enc = features.copy()
-cat_cols_to_encode = ['Gender', 'Year_of_Study', 'Department', 'Residence_Type']
 
-for col in cat_cols_to_encode:
-    if col in features_enc.columns:
-        features_enc[col] = features_enc[col].astype(str)
-
-encoded = pd.get_dummies(features_enc, columns=cat_cols_to_encode, dummy_na=True, drop_first=False)
+# Кодируем ВСЕ категориальные колонки, которые есть в датасете (делаем код универсальным)
+encoded = pd.get_dummies(features_enc, columns=categorical_cols, dummy_na=True, drop_first=False)
 save_result(encoded, "3_one_hot_encoded")
 
 # ------------------------------------------------------------
-# 5. Отбор признаков с помощью одномерной статистики
+# 5. Отбор признаков с разными alpha
 # ------------------------------------------------------------
-# Удаляем константные признаки (дисперсия = 0), чтобы избежать предупреждений
+# Удаляем константные признаки
 selector_var = VarianceThreshold(threshold=0.0)
 X_var = selector_var.fit_transform(encoded)
 retained_cols = encoded.columns[selector_var.get_support()]
@@ -99,6 +151,7 @@ X = pd.DataFrame(X_var, columns=retained_cols)
 
 y = target.astype(int)
 
+# Считаем F-статистику для всех признаков
 selector = SelectKBest(score_func=f_classif, k='all')
 selector.fit(X, y)
 
@@ -106,47 +159,54 @@ feat_scores = pd.DataFrame({
     'feature': X.columns,
     'f_score': selector.scores_,
     'p_value': selector.pvalues_
-})
+}).dropna()
 
-# На всякий случай убираем строки с NaN (если остались)
-feat_scores = feat_scores.dropna(subset=['f_score', 'p_value'])
-
-selected_features = feat_scores[feat_scores['p_value'] < 0.05].sort_values('p_value')
 save_result(feat_scores, "4_all_feature_scores")
-save_result(selected_features, "4_selected_features_p005")
+
+# Проверяем разные пороги alpha (p-value)
+alphas = [0.01, 0.05, 0.1, 0.2, 0.5]
+print("\nВлияние параметра alpha на количество отобранных признаков:")
+for alpha in alphas:
+    selected = feat_scores[feat_scores['p_value'] < alpha].sort_values('p_value')
+    print(f"  - alpha = {alpha}: отобрано {len(selected)} признаков")
+    save_result(selected, f"4_selected_features_alpha_{str(alpha).replace('.', '_')}")
 
 # ------------------------------------------------------------
-# 6. Обработка текстовых данных (мешок слов и tf-idf)
+# 6. Обработка текстовых данных (Общий корпус)
 # ------------------------------------------------------------
-text_files = ['559_4.txt', '3_4.txt', '555_4.txt', '556_1.txt']
+texts_dir = BASE_DIR / "texts"
 
-for fname in text_files:
-    path = BASE_DIR / fname
-    if not path.exists():
-        print(f"Предупреждение: файл {path} не найден, пропуск.")
-        continue
+if not texts_dir.exists():
+    print(f"\nВнимание: Папка '{texts_dir}' не найдена. Создайте её и поместите туда .txt файлы.")
+else:
+    text_files = list(texts_dir.glob("*.txt"))
+    print(f"\nНайдено текстовых файлов: {len(text_files)}")
 
-    text = path.read_text(encoding='utf-8')
-    text = re.sub(r'<br\s*/?>', ' ', text)
-    text = text.lower()
-    text = re.sub(r'[^\w\s]', '', text)
+    if len(text_files) > 0:
+        corpus = []
+        filenames = []
+        
+        for path in text_files:
+            text = path.read_text(encoding='utf-8')
+            text = re.sub(r'<br\s*/?>', ' ', text)
+            text = text.lower()
+            text = re.sub(r'[^\w\s]', '', text)
+            corpus.append(text)
+            filenames.append(path.stem)
 
-    vectorizer = CountVectorizer(stop_words='english')
-    X_counts = vectorizer.fit_transform([text])
-    bow_df = pd.DataFrame(X_counts.toarray(), columns=vectorizer.get_feature_names_out())
-    bow_df = bow_df.T.reset_index()
-    bow_df.columns = ['term', 'count']
-    bow_df = bow_df.sort_values('count', ascending=False)
-    base_name = Path(fname).stem
-    save_result(bow_df, f"5_bag_of_words_{base_name}")
+        # --- Мешок слов ---
+        vectorizer = CountVectorizer(stop_words='english')
+        X_counts = vectorizer.fit_transform(corpus)
+        
+        bow_df = pd.DataFrame(X_counts.toarray(), index=filenames, columns=vectorizer.get_feature_names_out()).T
+        save_result(bow_df, "5_bag_of_words_corpus")
 
-    transformer = TfidfTransformer(smooth_idf=True, norm=None)
-    X_tfidf = transformer.fit_transform(X_counts)
-    tfidf_df = pd.DataFrame(X_tfidf.toarray(), columns=vectorizer.get_feature_names_out())
-    tfidf_df = tfidf_df.T.reset_index()
-    tfidf_df.columns = ['term', 'tfidf']
-    tfidf_df = tfidf_df.sort_values('tfidf', ascending=False)
-    save_result(tfidf_df, f"5_tfidf_{base_name}")
+        # --- TF-IDF ---
+        transformer = TfidfTransformer(smooth_idf=True, norm=None)
+        X_tfidf = transformer.fit_transform(X_counts)
+        
+        tfidf_df = pd.DataFrame(X_tfidf.toarray(), index=filenames, columns=vectorizer.get_feature_names_out()).T
+        save_result(tfidf_df, "5_tfidf_corpus")
 
 # ------------------------------------------------------------
 # 7. Формирование отчёта
@@ -155,22 +215,22 @@ report_lines = [
     "Лабораторная работа №1: Методы предварительной обработки данных",
     "=" * 80,
     "Постановка задачи:",
-    "1. Загрузить датасет student_burnout_dropout_dataset_2-selected-columns.csv.",
+    f"1. Загрузить датасет {dataset_path.name}.",
     "2. Реализовать масштабирование: StandardScaler, RobustScaler, MinMaxScaler, Normalizer.",
     "3. Кодирование категориальных признаков методом прямого кодирования (one-hot).",
-    "4. Отбор признаков с помощью одномерных статистик (f_classif, порог p < 0.05).",
-    "5. Обработка текстов: мешок слов и tf-idf для каждого файла отдельно.",
+    "4. Отбор признаков с помощью одномерных статистик (f_classif, разные alpha).",
+    "5. Обработка текстов: мешок слов и tf-idf для всего корпуса текстов.",
     "",
     "Ход работы:",
-    "Датасет загружен. Исключён только Student_ID.",
-    f"Целевая переменная: {target_col}. Признаки: все остальные, включая Study_Hours_Per_Day.",
+    f"Датасет {dataset_path.name} загружен. Исключён Student_ID (если он был).",
+    f"Целевая переменная: {target_col}. Признаки: все остальные.",
     "Пропуски в числовых признаках заполнены медианой, в категориальных — модой.",
-    "Масштабирование применено ко всем числовым признакам (включая Study_Hours_Per_Day).",
-    "Категориальные признаки (Gender, Year_of_Study, Department, Residence_Type) закодированы one-hot.",
+    f"Масштабирование применено ко всем числовым признакам. Построен график сравнения (признаки: {f1} и {f2}).",
+    "Все категориальные признаки закодированы one-hot.",
     "Перед отбором признаков удалены константные столбцы (дисперсия = 0).",
-    "Отбор признаков выполнен с помощью f_classif и SelectKBest, выбраны признаки с p < 0.05.",
-    "Тексты обработаны: удалены HTML-теги, приведены к нижнему регистру, удалена пунктуация.",
-    "Построены модели мешка слов (CountVectorizer) и tf-idf (TfidfTransformer) для каждого файла.",
+    "Отбор признаков выполнен с помощью f_classif. Проверены пороги alpha: 0.01, 0.05, 0.1, 0.2, 0.5.",
+    "Тексты объединены в единый корпус для корректного расчета IDF.",
+    "Построены общие модели мешка слов (CountVectorizer) и tf-idf (TfidfTransformer).",
     "",
     "Результаты:",
     f"Файлы результатов сохранены в: {RESULT_DIR}",
@@ -183,7 +243,7 @@ for f in sorted(RESULT_DIR.iterdir()):
 report_lines.extend([
     "",
     "Выводы:",
-    "В ходе работы освоены методы предварительной обработки данных: масштабирование, кодирование категориальных признаков, отбор признаков, обработка текстов.",
+    "В ходе работы освоены методы предварительной обработки данных: масштабирование, кодирование категориальных признаков, отбор признаков, обработка текстов. Изменение параметра alpha позволяет гибко настраивать количество оставляемых признаков.",
     ""
 ])
 
