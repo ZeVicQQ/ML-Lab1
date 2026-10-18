@@ -19,6 +19,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM --- Проверка папки datasets ---
+if not exist "datasets\" mkdir datasets
+dir /b /a-d "datasets\*.csv" >nul 2>nul
+if errorlevel 1 (
+    echo.
+    echo [ОШИБКА] В папке 'datasets' нет ни одного CSV файла.
+    echo Поместите файл с датасетом в папку 'datasets' и запустите снова.
+    echo.
+    pause
+    exit /b 1
+)
+
 REM --- Создание виртуального окружения, если нет ---
 if not exist ".venv\Scripts\python.exe" (
     echo Создание виртуального окружения .venv ...
@@ -31,7 +43,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 REM --- Установка зависимостей, если не установлены ---
-".venv\Scripts\python.exe" -c "import pandas, numpy, sklearn, openpyxl" >nul 2>nul
+".venv\Scripts\python.exe" -c "import pandas, numpy, sklearn, openpyxl, matplotlib" >nul 2>nul
 if errorlevel 1 (
     echo Установка зависимостей...
     ".venv\Scripts\python.exe" -m pip install --upgrade pip
